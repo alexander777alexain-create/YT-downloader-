@@ -1,14 +1,31 @@
 from flask import Flask, request, redirect, jsonify
 import yt_dlp
+import re
 
 app = Flask(__name__)
 
-# Quality mapping
 QUALITY_MAP = {
     'low': 'worstvideo[ext=mp4]+worstaudio[ext=m4a]/worst[ext=mp4]',
     'medium': 'bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480][ext=mp4]',
     'high': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]'
 }
+
+def extract_video_id(url):
+    """Extract video ID from any YouTube URL (including shorts)"""
+    patterns = [
+        r'(?:v=|\/)([0-9A-Za-z_-]{11})(?:[?&]|$)',
+        r'(?:youtu\.be\/)([0-9A-Za-z_-]{11})',
+        r'(?:shorts\/)([0-9A-Za-z_-]{11})'
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, url)
+        if match:
+            return match.group(1)
+    return None
+
+def is_shorts_url(url):
+    """Check if URL is a YouTube Shorts link"""
+    return '/shorts/' in url or 'shorts/' in url
 
 @app.route('/')
 def home():
@@ -17,13 +34,24 @@ def home():
 @app.route('/api/download')
 def download():
     url = request.args.get('url')
-    quality = request.args.get('quality', 'high').lower()
+    quality_param = request.args.get('quality', 'high').lower()
     
     if not url:
         return jsonify({'error': 'url parameter required'}), 400
     
+    # Extract video ID and normalize URL
+    video_id = extract_video_id(url)
+    if video_id:
+        url = f'https://www.youtube.com/watch?v={video_id}'
+    
     if 'youtube.com' not in url and 'youtu.be' not in url:
         return jsonify({'error': 'only YouTube URLs supported'}), 400
+    
+    # Check if it's a Shorts link
+    is_shorts = is_shorts_url(request.args.get('url'))
+    
+    # If shorts, force high quality (best available)
+    quality = 'high' if is_shorts else quality_param
     
     if quality not in QUALITY_MAP:
         return jsonify({'error': 'quality must be low, medium, or high'}), 400
@@ -59,22 +87,33 @@ def download():
             if not video_url:
                 return jsonify({'error': 'video URL not found'}), 500
             
-            # Redirect mode
-            if request.args.get('redirect') == 'true':
+            # If shorts and redirect mode, redirect directly
+            if is_shorts and request.args.get('redirect') == 'true':
                 return redirect(video_url)
             
-            # JSON response
-            return jsonify({
+            # Build response
+            response = {
                 'success': True,
                 'title': info.get('title', 'Unknown'),
                 'video_url': video_url,
                 'thumbnail': info.get('thumbnail'),
                 'duration': info.get('duration'),
-                'quality': quality,
+                'quality': 'original' if is_shorts else quality,
+                'is_shorts': is_shorts,
                 'uploader': info.get('uploader'),
                 'view_count': info.get('view_count'),
                 'like_count': info.get('like_count')
-            })
+            }
+            
+            # If shorts, add message
+            if is_shorts:
+                response['message'] = 'YouTube Shorts detected — delivered in original quality'
+            
+            # Redirect mode (for non-shorts)
+            if not is_shorts and request.args.get('redirect') == 'true':
+                return redirect(video_url)
+            
+            return jsonify(response)
             
     except Exception as e:
         return jsonify({'error': str(e)}), 500
