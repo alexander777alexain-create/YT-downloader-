@@ -1,6 +1,8 @@
 from flask import Flask, request, redirect, jsonify
-import yt_dlp
+import subprocess
+import json
 import re
+import os
 
 app = Flask(__name__)
 
@@ -11,8 +13,8 @@ QUALITY_MAP = {
 }
 
 def extract_video_id(url):
-    """Extract 11-character video ID from any YouTube URL"""
-    # Remove tracking parameters like ?si=...
+    """Extract video ID from any YouTube URL"""
+    # Remove tracking parameters
     url = re.sub(r'\?si=[^&\s]+', '', url)
     url = re.sub(r'&si=[^&\s]+', '', url)
     
@@ -42,7 +44,7 @@ def download():
     if not raw_url:
         return jsonify({'error': 'url parameter required'}), 400
     
-    # Convert any YouTube URL to standard watch URL
+    # Convert to watch URL
     video_id = extract_video_id(raw_url)
     if video_id:
         url = f'https://www.youtube.com/watch?v={video_id}'
@@ -52,7 +54,6 @@ def download():
     if 'youtube.com' not in url:
         return jsonify({'error': 'only YouTube URLs supported'}), 400
     
-    # Shorts force original quality
     is_shorts = is_shorts_url(raw_url)
     final_quality = 'high' if is_shorts else quality
     
@@ -60,57 +61,69 @@ def download():
         return jsonify({'error': 'quality must be low, medium, or high'}), 400
     
     try:
-        ydl_opts = {
-            'quiet': True,
-            'no_warnings': True,
-            'extract_flat': False,
-            'format': QUALITY_MAP[final_quality],
-            'nocheckcertificate': True,
-            'ignoreerrors': True,
-            'extractor_args': {
-                'youtube': {
-                    'player_client': ['android', 'web'],
-                    'skip': ['dash', 'hls']
-                }
-            }
-        }
+        # 🔥 Use subprocess instead of yt-dlp Python module
+        format_filter = QUALITY_MAP[final_quality]
         
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
+        # Get video URL
+        cmd = [
+            'yt-dlp',
+            '-g',  # Get URL only
+            '--extractor-args', 'youtube:player_client=android',
+            '--format', format_filter,
+            '--no-check-certificate',
+            url
+        ]
+        
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        
+        if result.returncode != 0:
+            # Try with web client as fallback
+            cmd[4] = 'youtube:player_client=web'
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
             
-            if not info:
-                return jsonify({'error': 'No data found'}), 500
-            
-            video_url = None
-            if 'url' in info:
-                video_url = info['url']
-            elif 'formats' in info and info['formats']:
-                for f in info['formats']:
-                    if f.get('url') and 'video' in f.get('format_note', '').lower():
-                        video_url = f['url']
-                        break
-                if not video_url:
-                    video_url = info['formats'][-1].get('url')
-            
-            if not video_url:
-                return jsonify({'error': 'video URL not found'}), 500
-            
-            if request.args.get('redirect') == 'true':
-                return redirect(video_url)
-            
-            return jsonify({
-                'success': True,
-                'title': info.get('title', 'Unknown'),
-                'video_url': video_url,
-                'thumbnail': info.get('thumbnail'),
-                'duration': info.get('duration'),
-                'quality': 'original' if is_shorts else final_quality,
-                'is_shorts': is_shorts,
-                'uploader': info.get('uploader'),
-                'view_count': info.get('view_count'),
-                'like_count': info.get('like_count')
-            })
-            
+            if result.returncode != 0:
+                return jsonify({'error': f'yt-dlp failed: {result.stderr[:200]}'}), 500
+        
+        video_url = result.stdout.strip().split('\n')[0]
+        
+        if not video_url:
+            return jsonify({'error': 'No video URL found'}), 500
+        
+        # Get metadata
+        meta_cmd = [
+            'yt-dlp',
+            '-j',  # JSON output
+            '--extractor-args', 'youtube:player_client=android',
+            '--no-check-certificate',
+            url
+        ]
+        meta_result = subprocess.run(meta_cmd, capture_output=True, text=True, timeout=30)
+        
+        info = {}
+        if meta_result.returncode == 0 and meta_result.stdout:
+            try:
+                info = json.loads(meta_result.stdout)
+            except:
+                pass
+        
+        if request.args.get('redirect') == 'true':
+            return redirect(video_url)
+        
+        return jsonify({
+            'success': True,
+            'title': info.get('title', 'Unknown'),
+            'video_url': video_url,
+            'thumbnail': info.get('thumbnail'),
+            'duration': info.get('duration'),
+            'quality': 'original' if is_shorts else final_quality,
+            'is_shorts': is_shorts,
+            'uploader': info.get('uploader'),
+            'view_count': info.get('view_count'),
+            'like_count': info.get('like_count')
+        })
+        
+    except subprocess.TimeoutExpired:
+        return jsonify({'error': 'Timeout — video too large or slow'}), 504
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
