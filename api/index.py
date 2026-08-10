@@ -12,6 +12,10 @@ QUALITY_MAP = {
 
 def extract_video_id(url):
     """Extract 11-character video ID from any YouTube URL"""
+    # Remove tracking parameters like ?si=...
+    url = re.sub(r'\?si=[^&\s]+', '', url)
+    url = re.sub(r'&si=[^&\s]+', '', url)
+    
     patterns = [
         r'(?:v=|\/)([0-9A-Za-z_-]{11})(?:[?&]|$)',
         r'(?:youtu\.be\/)([0-9A-Za-z_-]{11})',
@@ -45,7 +49,7 @@ def download():
     else:
         url = raw_url
     
-    if 'youtube.com' not in url and 'youtu.be' not in url:
+    if 'youtube.com' not in url:
         return jsonify({'error': 'only YouTube URLs supported'}), 400
     
     # Shorts force original quality
@@ -62,7 +66,13 @@ def download():
             'extract_flat': False,
             'format': QUALITY_MAP[final_quality],
             'nocheckcertificate': True,
-            'ignoreerrors': True
+            'ignoreerrors': True,
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['android', 'web'],
+                    'skip': ['dash', 'hls']
+                }
+            }
         }
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
