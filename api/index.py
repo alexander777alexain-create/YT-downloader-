@@ -2,7 +2,7 @@ from flask import Flask, request, redirect, jsonify
 import subprocess
 import json
 import re
-import os
+import sys
 
 app = Flask(__name__)
 
@@ -13,11 +13,8 @@ QUALITY_MAP = {
 }
 
 def extract_video_id(url):
-    """Extract video ID from any YouTube URL"""
-    # Remove tracking parameters
     url = re.sub(r'\?si=[^&\s]+', '', url)
     url = re.sub(r'&si=[^&\s]+', '', url)
-    
     patterns = [
         r'(?:v=|\/)([0-9A-Za-z_-]{11})(?:[?&]|$)',
         r'(?:youtu\.be\/)([0-9A-Za-z_-]{11})',
@@ -44,7 +41,6 @@ def download():
     if not raw_url:
         return jsonify({'error': 'url parameter required'}), 400
     
-    # Convert to watch URL
     video_id = extract_video_id(raw_url)
     if video_id:
         url = f'https://www.youtube.com/watch?v={video_id}'
@@ -61,13 +57,11 @@ def download():
         return jsonify({'error': 'quality must be low, medium, or high'}), 400
     
     try:
-        # 🔥 Use subprocess instead of yt-dlp Python module
         format_filter = QUALITY_MAP[final_quality]
         
-        # Get video URL
         cmd = [
-            'yt-dlp',
-            '-g',  # Get URL only
+            sys.executable, '-m', 'yt_dlp',
+            '-g',
             '--extractor-args', 'youtube:player_client=android',
             '--format', format_filter,
             '--no-check-certificate',
@@ -77,22 +71,21 @@ def download():
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
         
         if result.returncode != 0:
-            # Try with web client as fallback
             cmd[4] = 'youtube:player_client=web'
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
             
             if result.returncode != 0:
-                return jsonify({'error': f'yt-dlp failed: {result.stderr[:200]}'}), 500
+                return jsonify({'error': f'Failed: {result.stderr[:200]}'}), 500
         
         video_url = result.stdout.strip().split('\n')[0]
         
         if not video_url:
             return jsonify({'error': 'No video URL found'}), 500
         
-        # Get metadata
+        # metadata
         meta_cmd = [
-            'yt-dlp',
-            '-j',  # JSON output
+            sys.executable, '-m', 'yt_dlp',
+            '-j',
             '--extractor-args', 'youtube:player_client=android',
             '--no-check-certificate',
             url
@@ -123,7 +116,7 @@ def download():
         })
         
     except subprocess.TimeoutExpired:
-        return jsonify({'error': 'Timeout — video too large or slow'}), 504
+        return jsonify({'error': 'Timeout'}), 504
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
