@@ -1,10 +1,11 @@
 from flask import Flask, request, redirect, jsonify
-import yt_dlp
+import requests
 import re
 
 app = Flask(__name__)
 
 def extract_video_id(url):
+    """Extract YouTube video ID from any URL"""
     url = re.sub(r'\?si=[^&\s]+', '', url)
     patterns = [
         r'(?:v=|\/)([0-9A-Za-z_-]{11})(?:[?&]|$)',
@@ -29,35 +30,19 @@ def download():
         return jsonify({'error': 'url parameter required'}), 400
     
     video_id = extract_video_id(raw_url)
-    if video_id:
-        url = f'https://www.youtube.com/watch?v={video_id}'
-    else:
+    if not video_id:
         return jsonify({'error': 'invalid YouTube URL'}), 400
     
     try:
-        ydl_opts = {
-            'quiet': True,
-            'no_warnings': True,
-            'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]',
-            'nocheckcertificate': True,
-            'extractor_args': {'youtube': {'player_client': ['android', 'web']}}
-        }
+        # External API — works on Vercel, no yt-dlp dependency
+        api_url = f'https://api.vevioz.com/api/button/mp3/{video_id}'
+        resp = requests.get(api_url, timeout=10)
+        data = resp.json()
         
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            
-            # Extract video URL
-            video_url = info.get('url')
-            if not video_url and info.get('formats'):
-                for f in info['formats']:
-                    if f.get('url') and 'video' in f.get('format_note', '').lower():
-                        video_url = f['url']
-                        break
-                if not video_url:
-                    video_url = info['formats'][-1].get('url')
-            
+        if data.get('success'):
+            video_url = data.get('download') or data.get('link')
             if not video_url:
-                return jsonify({'error': 'video URL not found'}), 500
+                return jsonify({'error': 'download link not found'}), 500
             
             # Redirect mode
             if request.args.get('redirect') == 'true':
@@ -65,15 +50,19 @@ def download():
             
             return jsonify({
                 'success': True,
-                'title': info.get('title', 'Unknown'),
+                'title': data.get('title', 'Unknown'),
                 'video_url': video_url,
-                'thumbnail': info.get('thumbnail'),
-                'duration': info.get('duration'),
-                'uploader': info.get('uploader')
+                'thumbnail': data.get('thumbnail'),
+                'duration': data.get('duration'),
+                'uploader': data.get('uploader')
             })
+        else:
+            return jsonify({'error': 'API returned error'}), 500
             
+    except requests.Timeout:
+        return jsonify({'error': 'request timed out'}), 504
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
+    app.run(debug=True, host='0.0.0.0', port=5000)
